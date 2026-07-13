@@ -9,6 +9,7 @@ import os
 import stat
 import sys
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ class SyncResult:
     created: int = 0
     skipped: int = 0
     planned: int = 0
+    attachments_added: int = 0
 
 
 class AsanaTaskCreator(Protocol):
@@ -55,6 +57,10 @@ class AsanaTaskCreator(Protocol):
         workspace_gid: str | None,
         project_gid: str | None,
         assignee: str | None,
+    ) -> Mapping[str, Any]: ...
+
+    def attach_external_url(
+        self, *, task_gid: str, name: str, url: str
     ) -> Mapping[str, Any]: ...
 
 
@@ -83,13 +89,30 @@ def sync_state_path() -> Path:
 
 def _secure_write(path: Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(contents, encoding="utf-8")
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     try:
-        os.chmod(temporary, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
-    temporary.replace(path)
+        temporary.write_text(contents, encoding="utf-8")
+        try:
+            os.chmod(temporary, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+
+        for attempt in range(5):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError as exc:
+                if attempt == 4:
+                    raise CliError(
+                        "Windows could not update the local sync state because the file is "
+                        f"locked: {path}. Close any other Drive to Asana windows and try again."
+                    ) from exc
+                time.sleep(0.2 * (attempt + 1))
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def extract_drive_folder_id(value: str) -> str:
@@ -299,6 +322,31 @@ class AsanaClient:
             json={"data": data},
         )["data"]
 
+    def attach_external_url(
+        self, *, task_gid: str, name: str, url: str
+    ) -> Mapping[str, Any]:
+        """Add a Drive URL to a task as an Asana external attachment."""
+
+        for attempt in range(3):
+            try:
+                return self._request(
+                    "POST",
+                    "/attachments",
+                    params={"opt_fields": "gid,name,resource_subtype,permanent_url"},
+                    files={
+                        "parent": (None, task_gid),
+                        "resource_subtype": (None, "external"),
+                        "name": (None, name),
+                        "url": (None, url),
+                    },
+                )["data"]
+            except CliError as exc:
+                if attempt == 2 or not _is_unknown_attachment_parent_error(exc):
+                    raise
+                time.sleep(attempt + 1)
+
+        raise CliError("Asana attachment creation failed after several attempts.")
+
     def _paginated(
         self, path: str, *, params: Mapping[str, Any]
     ) -> Iterator[Mapping[str, Any]]:
@@ -361,6 +409,10 @@ def _asana_error_message(response: Any) -> str:
     return f"Asana API error {response.status_code}: {detail}"
 
 
+def _is_unknown_attachment_parent_error(error: CliError) -> bool:
+    return "parent: unknown object" in str(error).lower()
+
+
 class SyncState:
     """Local idempotency state keyed by Drive file and Asana destination."""
 
@@ -386,6 +438,13 @@ class SyncState:
     def contains(self, file_gid: str, destination: str) -> bool:
         return self.key(file_gid, destination) in self.entries
 
+    def entry(self, file_gid: str, destination: str) -> Mapping[str, Any] | None:
+        return self.entries.get(self.key(file_gid, destination))
+
+    def attachment_added(self, file_gid: str, destination: str) -> bool:
+        entry = self.entry(file_gid, destination)
+        return bool(entry and entry.get("attachment_added"))
+
     def record(
         self,
         *,
@@ -401,7 +460,22 @@ class SyncState:
             "asana_task_gid": task_gid,
             "asana_task_url": task_url,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "attachment_added": False,
         }
+        self.save()
+
+    def mark_attachment_added(self, file_gid: str, destination: str) -> None:
+        entry = self.entry(file_gid, destination)
+        if not entry:
+            raise CliError(
+                "Cannot record an attachment for a task that is not in sync state."
+            )
+        entry["attachment_added"] = True
+        entry["attachment_added_at"] = datetime.now(timezone.utc).isoformat()
+        self.save()
+
+    def remove(self, file_gid: str, destination: str) -> None:
+        self.entries.pop(self.key(file_gid, destination), None)
         self.save()
 
     def save(self) -> None:
@@ -444,12 +518,43 @@ def sync_files(
     destination = (
         f"project:{project_gid}" if project_gid else f"workspace:{workspace_gid}"
     )
-    created = skipped = planned = 0
+    created = skipped = planned = attachments_added = 0
     for file in files:
-        if not allow_duplicates and state.contains(file.gid, destination):
-            report(f"SKIP    {file.name} (already synced)")
-            skipped += 1
-            continue
+        existing_entry = state.entry(file.gid, destination)
+        if not allow_duplicates and existing_entry:
+            if state.attachment_added(file.gid, destination):
+                report(f"SKIP    {file.name} (already synced)")
+                skipped += 1
+                continue
+
+            task_gid = str(existing_entry.get("asana_task_gid") or "")
+            if not task_gid:
+                raise CliError(
+                    f"The sync state for '{file.name}' has no Asana task ID. "
+                    "Remove that entry from the sync state file and run again."
+                )
+            if dry_run:
+                report(f"ATTACH  {file.name}  [{file.folder_path}]")
+                planned += 1
+                continue
+            try:
+                asana.attach_external_url(
+                    task_gid=task_gid,
+                    name=file.name,
+                    url=file.web_view_link,
+                )
+            except CliError as exc:
+                if not _is_unknown_attachment_parent_error(exc):
+                    raise
+                report(
+                    f"RECREATE {file.name} (the previously synced Asana task is unavailable)"
+                )
+                state.remove(file.gid, destination)
+            else:
+                state.mark_attachment_added(file.gid, destination)
+                report(f"ATTACHED {file.name} (existing task)")
+                attachments_added += 1
+                continue
 
         if dry_run:
             report(f"CREATE  {file.name}  [{file.folder_path}]")
@@ -472,13 +577,25 @@ def sync_files(
             task_gid=task_gid,
             task_url=task.get("permalink_url"),
         )
+        asana.attach_external_url(
+            task_gid=task_gid,
+            name=file.name,
+            url=file.web_view_link,
+        )
+        state.mark_attachment_added(file.gid, destination)
         report(
             f"CREATED {file.name}"
             + (f"  {task['permalink_url']}" if task.get("permalink_url") else "")
         )
         created += 1
+        attachments_added += 1
 
-    return SyncResult(created=created, skipped=skipped, planned=planned)
+    return SyncResult(
+        created=created,
+        skipped=skipped,
+        planned=planned,
+        attachments_added=attachments_added,
+    )
 
 
 def load_google_credentials() -> Any:
@@ -667,10 +784,13 @@ def _command_sync(args: argparse.Namespace) -> int:
     )
     if args.dry_run:
         print(
-            f"\nDry run: {result.planned} to create, {result.skipped} already synced."
+            f"\nDry run: {result.planned} change(s) planned, {result.skipped} already synced."
         )
     else:
-        print(f"\nDone: {result.created} created, {result.skipped} already synced.")
+        print(
+            f"\nDone: {result.created} created, {result.attachments_added} Drive links "
+            f"attached, {result.skipped} already synced."
+        )
     return 0
 
 
@@ -693,6 +813,7 @@ def _select_item(
         raise CliError(f"No accessible Asana {item_name}s were found.")
 
     print()
+    print(f"Available Asana {item_name}s:")
     if allow_none:
         print(f"0. My Tasks only (do not add tasks to an Asana {item_name})")
     for index, item in enumerate(items, start=1):
@@ -771,15 +892,22 @@ def _command_wizard() -> int:
     drive = _wizard_drive_client()
     asana, _user = _wizard_asana_client()
 
+    print("\nLoading your accessible Asana workspaces...")
     workspaces = asana.list_workspaces()
     workspace = _select_item(workspaces, item_name="workspace")
     if workspace is None:
         raise CliError("An Asana workspace is required.")
     workspace_gid = str(workspace.get("gid") or "")
+    print(f"Selected workspace: {workspace.get('name')}  [{workspace_gid}]")
 
+    print("\nLoading projects in the selected workspace...")
     projects = asana.list_projects(workspace_gid)
     project = _select_item(projects, item_name="project", allow_none=True)
     project_gid = str(project.get("gid")) if project else None
+    if project:
+        print(f"Selected project: {project.get('name')}  [{project_gid}]")
+    else:
+        print("Selected destination: My Tasks")
 
     print()
     folder_link = _input("Paste the Google Drive folder link: ").strip()
@@ -794,9 +922,16 @@ def _command_wizard() -> int:
     destination = (
         f"project:{project_gid}" if project_gid else f"workspace:{workspace_gid}"
     )
-    pending_files = [
+    new_task_files = [
         file for file in files if not state.contains(file.gid, destination)
     ]
+    attachment_only_files = [
+        file
+        for file in files
+        if state.contains(file.gid, destination)
+        and not state.attachment_added(file.gid, destination)
+    ]
+    pending_files = new_task_files + attachment_only_files
     skipped_count = len(files) - len(pending_files)
 
     destination_name = project.get("name") if project else "My Tasks"
@@ -804,7 +939,11 @@ def _command_wizard() -> int:
     print(f"Files found: {len(files)}")
     if skipped_count:
         print(f"Already synced and skipped: {skipped_count}")
-    print(f"New tasks to create: {len(pending_files)}")
+    print(f"New tasks to create: {len(new_task_files)}")
+    if attachment_only_files:
+        print(
+            f"Existing tasks missing a Drive attachment: {len(attachment_only_files)}"
+        )
 
     for file in pending_files[:20]:
         print(f"  - {file.name}  [{file.folder_path}]")
@@ -814,8 +953,8 @@ def _command_wizard() -> int:
     if not pending_files:
         print("Everything in this folder has already been synced.")
         return 0
-    if not _confirm("Create these Asana tasks now?"):
-        print("Cancelled. No tasks were created.")
+    if not _confirm("Apply these Asana changes now?"):
+        print("Cancelled. No tasks were created or updated.")
         return 0
 
     result = sync_files(
@@ -826,7 +965,10 @@ def _command_wizard() -> int:
         project_gid=project_gid,
         assignee="me",
     )
-    print(f"\nDone: {result.created} created, {result.skipped} already synced.")
+    print(
+        f"\nDone: {result.created} created, {result.attachments_added} Drive links "
+        f"attached, {result.skipped} already synced."
+    )
     return 0
 
 

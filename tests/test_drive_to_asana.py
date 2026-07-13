@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from drive_to_asana import (
     SyncState,
     _confirm,
     _select_item,
+    _secure_write,
     build_parser,
     extract_drive_folder_id,
     sync_files,
@@ -52,6 +54,7 @@ class FakeDriveService:
 class FakeAsana:
     def __init__(self):
         self.calls = []
+        self.attachments = []
 
     def create_task(self, **kwargs):
         self.calls.append(kwargs)
@@ -60,6 +63,23 @@ class FakeAsana:
             "gid": f"task-{index}",
             "permalink_url": f"https://app.asana.com/task/{index}",
         }
+
+    def attach_external_url(self, **kwargs):
+        self.attachments.append(kwargs)
+        return {"gid": f"attachment-{len(self.attachments)}", "name": kwargs["name"]}
+
+
+class StaleTaskAsana(FakeAsana):
+    def __init__(self, stale_task_gid):
+        super().__init__()
+        self.stale_task_gid = stale_task_gid
+
+    def attach_external_url(self, **kwargs):
+        if kwargs["task_gid"] == self.stale_task_gid:
+            raise CliError(
+                f"Asana API error 400: parent: Unknown object: {self.stale_task_gid}"
+            )
+        return super().attach_external_url(**kwargs)
 
 
 class FakeResponse:
@@ -206,6 +226,43 @@ class AsanaClientTests(unittest.TestCase):
             },
         )
 
+    def test_attaches_drive_url_as_external_attachment(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "data": {
+                            "gid": "attachment-123",
+                            "name": "Report.pdf",
+                            "resource_subtype": "external",
+                        }
+                    },
+                )
+            ]
+        )
+        client = AsanaClient("secret-token", session=session)
+
+        attachment = client.attach_external_url(
+            task_gid="task-123",
+            name="Report.pdf",
+            url="https://drive.google.com/open?id=file-123",
+        )
+
+        self.assertEqual(attachment["gid"], "attachment-123")
+        method, url, kwargs = session.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertTrue(url.endswith("/attachments"))
+        self.assertEqual(
+            kwargs["files"],
+            {
+                "parent": (None, "task-123"),
+                "resource_subtype": (None, "external"),
+                "name": (None, "Report.pdf"),
+                "url": (None, "https://drive.google.com/open?id=file-123"),
+            },
+        )
+
     def test_workspace_listing_follows_asana_pagination(self):
         session = FakeSession(
             [
@@ -227,6 +284,31 @@ class AsanaClientTests(unittest.TestCase):
 
         self.assertEqual([item["gid"] for item in workspaces], ["one", "two"])
         self.assertEqual(session.calls[1][2]["params"]["offset"], "next-offset")
+
+
+class SecureWriteTests(unittest.TestCase):
+    def test_retries_a_transient_windows_file_lock(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "state.json"
+            real_replace = os.replace
+            calls = 0
+
+            def locked_then_replace(source, destination):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise PermissionError("locked")
+                real_replace(source, destination)
+
+            with (
+                patch("drive_to_asana.os.replace", side_effect=locked_then_replace),
+                patch("drive_to_asana.time.sleep") as sleep,
+            ):
+                _secure_write(state_path, '{"entries": {}}')
+
+            self.assertEqual(state_path.read_text(encoding="utf-8"), '{"entries": {}}')
+            self.assertEqual(calls, 2)
+            sleep.assert_called_once_with(0.2)
 
 
 class SyncTests(unittest.TestCase):
@@ -254,8 +336,26 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(result.created, 2)
         self.assertEqual([call["name"] for call in asana.calls], ["One.pdf", "Two.pdf"])
         self.assertIn("Drive link: https://drive/one", asana.calls[0]["notes"])
+        self.assertEqual(
+            asana.attachments,
+            [
+                {
+                    "task_gid": "task-1",
+                    "name": "One.pdf",
+                    "url": "https://drive/one",
+                },
+                {
+                    "task_gid": "task-2",
+                    "name": "Two.pdf",
+                    "url": "https://drive/two",
+                },
+            ],
+        )
         payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.assertEqual(len(payload["entries"]), 2)
+        self.assertTrue(
+            all(entry["attachment_added"] for entry in payload["entries"].values())
+        )
 
     def test_second_sync_skips_previously_created_tasks(self):
         asana = FakeAsana()
@@ -279,6 +379,63 @@ class SyncTests(unittest.TestCase):
 
         self.assertEqual(second_result.skipped, 2)
         self.assertEqual(len(asana.calls), 2)
+        self.assertEqual(len(asana.attachments), 2)
+
+    def test_attaches_missing_url_to_a_task_created_by_an_earlier_version(self):
+        asana = FakeAsana()
+        state = SyncState(self.state_path)
+        state.record(
+            file=self.files[0],
+            destination="workspace:workspace-123",
+            task_gid="existing-task-123",
+            task_url="https://app.asana.com/task/existing-task-123",
+        )
+
+        result = sync_files(
+            [self.files[0]],
+            asana=asana,
+            state=state,
+            workspace_gid="workspace-123",
+            project_gid=None,
+            report=lambda _message: None,
+        )
+
+        self.assertEqual(result.created, 0)
+        self.assertEqual(result.attachments_added, 1)
+        self.assertEqual(asana.calls, [])
+        self.assertEqual(asana.attachments[0]["task_gid"], "existing-task-123")
+        self.assertTrue(
+            state.attachment_added(self.files[0].gid, "workspace:workspace-123")
+        )
+
+    def test_replaces_a_stale_task_when_the_current_token_cannot_access_it(self):
+        stale_task_gid = "stale-task-123"
+        asana = StaleTaskAsana(stale_task_gid)
+        state = SyncState(self.state_path)
+        state.record(
+            file=self.files[0],
+            destination="workspace:workspace-123",
+            task_gid=stale_task_gid,
+            task_url="https://app.asana.com/task/stale-task-123",
+        )
+
+        result = sync_files(
+            [self.files[0]],
+            asana=asana,
+            state=state,
+            workspace_gid="workspace-123",
+            project_gid=None,
+            report=lambda _message: None,
+        )
+
+        self.assertEqual(result.created, 1)
+        self.assertEqual(result.attachments_added, 1)
+        self.assertEqual(len(asana.calls), 1)
+        self.assertEqual(asana.attachments[0]["task_gid"], "task-1")
+        self.assertEqual(
+            state.entry(self.files[0].gid, "workspace:workspace-123")["asana_task_gid"],
+            "task-1",
+        )
 
     def test_dry_run_does_not_call_asana_or_write_state(self):
         asana = FakeAsana()

@@ -1,0 +1,1033 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Create Asana tasks from files in a Google Drive folder."
+    />
+    <title>Drive to Asana</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        background: #f6f7fb;
+        color: #1f2937;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        line-height: 1.45;
+      }
+
+      main {
+        width: min(100% - 2rem, 960px);
+        margin: 2.5rem auto 4rem;
+      }
+
+      header {
+        margin-bottom: 1.5rem;
+      }
+
+      h1,
+      h2,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        margin-bottom: 0.35rem;
+        font-size: clamp(2rem, 5vw, 3rem);
+        letter-spacing: -0.04em;
+      }
+
+      h2 {
+        font-size: 1.1rem;
+      }
+
+      .subtitle,
+      .hint {
+        color: #5b6474;
+      }
+
+      .card {
+        margin: 1rem 0;
+        padding: 1.25rem;
+        border: 1px solid #dce0e8;
+        border-radius: 14px;
+        background: #fff;
+        box-shadow: 0 2px 8px rgb(31 41 55 / 4%);
+      }
+
+      .warning {
+        border-color: #e7ca83;
+        background: #fff9e9;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+      }
+
+      .full {
+        grid-column: 1 / -1;
+      }
+
+      label {
+        display: grid;
+        gap: 0.35rem;
+        font-weight: 600;
+      }
+
+      input,
+      select,
+      button {
+        font: inherit;
+      }
+
+      input,
+      select {
+        width: 100%;
+        min-height: 2.65rem;
+        padding: 0.55rem 0.65rem;
+        border: 1px solid #b8c0ce;
+        border-radius: 8px;
+        background: #fff;
+        color: inherit;
+      }
+
+      input:focus,
+      select:focus,
+      button:focus-visible {
+        outline: 3px solid #a8c7ff;
+        outline-offset: 2px;
+      }
+
+      .checkbox {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.55rem;
+        font-weight: 400;
+      }
+
+      .checkbox input {
+        width: auto;
+        min-height: auto;
+        margin-top: 0.25rem;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+        margin-top: 1rem;
+      }
+
+      button {
+        min-height: 2.6rem;
+        padding: 0.55rem 0.9rem;
+        border: 1px solid #2855a4;
+        border-radius: 8px;
+        background: #2855a4;
+        color: #fff;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        border-color: #b8c0ce;
+        background: #fff;
+        color: #293545;
+      }
+
+      button.danger {
+        border-color: #b73c3c;
+        color: #9d2929;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        min-height: 1.8rem;
+        margin-top: 0.75rem;
+        padding: 0.18rem 0.6rem;
+        border-radius: 999px;
+        background: #edf0f5;
+        color: #455164;
+        font-size: 0.9rem;
+      }
+
+      .status.good {
+        background: #e1f5e7;
+        color: #146c35;
+      }
+
+      .status.bad {
+        background: #fde7e6;
+        color: #a02b27;
+      }
+
+      .preview-wrap {
+        overflow: auto;
+        max-height: 26rem;
+        border: 1px solid #dce0e8;
+        border-radius: 8px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+
+      th,
+      td {
+        padding: 0.65rem;
+        border-bottom: 1px solid #e8ebf0;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        position: sticky;
+        top: 0;
+        background: #f8f9fc;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      code,
+      .log {
+        font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      }
+
+      .log {
+        min-height: 8rem;
+        max-height: 22rem;
+        overflow: auto;
+        margin: 0;
+        padding: 0.85rem;
+        border-radius: 8px;
+        background: #172033;
+        color: #d7e0f1;
+        font-size: 0.82rem;
+        white-space: pre-wrap;
+      }
+
+      a {
+        color: #174ea6;
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      details {
+        margin-top: 1rem;
+        padding-top: 0.9rem;
+        border-top: 1px solid #e4e7ed;
+      }
+
+      summary {
+        cursor: pointer;
+        color: #174ea6;
+        font-weight: 650;
+      }
+
+      details p {
+        margin: 0.65rem 0 0;
+      }
+
+      @media (max-width: 700px) {
+        main {
+          width: min(100% - 1.25rem, 960px);
+          margin-top: 1.25rem;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .full {
+          grid-column: auto;
+        }
+      }
+    </style>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Drive to Asana</h1>
+        <p class="subtitle">
+          Create one Asana task for each file in a Google Drive folder. The
+          Drive file URL is included in the task notes and as an Asana link
+          attachment.
+        </p>
+      </header>
+
+      <section class="card warning">
+        <h2>Keep your Asana token private</h2>
+        <p>
+          This page can remember an Asana personal access token only in this
+          browser, on this site. Do not enable that option on a shared or
+          untrusted computer, and never put a token in this HTML file or a Git
+          repository. Google access is authorized in a Google pop-up and its
+          short-lived token is kept only while this tab is open.
+        </p>
+      </section>
+
+      <section class="card" aria-labelledby="settings-heading">
+        <h2 id="settings-heading">1. Connection settings</h2>
+        <div class="grid">
+          <label class="full" for="google-client-id">
+            Google OAuth web client ID
+            <input
+              id="google-client-id"
+              type="text"
+              autocomplete="off"
+              placeholder="1234567890-abc123.apps.googleusercontent.com"
+            />
+          </label>
+          <label class="full" for="asana-token">
+            Asana personal access token
+            <input
+              id="asana-token"
+              type="password"
+              autocomplete="off"
+              placeholder="Paste your Asana PAT"
+            />
+          </label>
+          <label class="checkbox full" for="remember-asana-token">
+            <input id="remember-asana-token" type="checkbox" />
+            <span>Remember my Asana token in this browser on this site.</span>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="save-settings" class="secondary" type="button">
+            Save browser settings
+          </button>
+          <button id="clear-browser-data" class="secondary danger" type="button">
+            Clear saved settings and sync history
+          </button>
+        </div>
+        <p class="hint">
+          The Google client ID is public and is safe to save. A browser app does
+          not use or store a Google client secret.
+        </p>
+      </section>
+
+      <section class="card" aria-labelledby="connect-heading">
+        <h2 id="connect-heading">2. Connect the accounts</h2>
+        <div class="actions">
+          <button id="connect-google" type="button">Connect Google Drive</button>
+          <button id="load-asana" type="button" class="secondary">
+            Load Asana workspaces
+          </button>
+        </div>
+        <div id="google-status" class="status" role="status">Google Drive not connected</div>
+        <div id="asana-status" class="status" role="status">Asana not connected</div>
+        <details>
+          <summary>Google says this app is unverified or access is blocked</summary>
+          <p>
+            In Google Cloud Console, confirm that the Drive API is enabled, the
+            <code>drive.metadata.readonly</code> scope is configured, and the
+            Google account using this page is listed as a test user when the
+            OAuth app is External and in Testing. Google, not this page,
+            controls verification and Workspace administrator restrictions.
+          </p>
+        </details>
+      </section>
+
+      <section class="card" aria-labelledby="source-heading">
+        <h2 id="source-heading">3. Choose the Drive folder and Asana destination</h2>
+        <div class="grid">
+          <label class="full" for="drive-folder-url">
+            Google Drive folder link
+            <input
+              id="drive-folder-url"
+              type="url"
+              inputmode="url"
+              autocomplete="url"
+              placeholder="https://drive.google.com/drive/folders/..."
+            />
+          </label>
+          <label for="workspace">
+            Asana workspace
+            <select id="workspace" disabled>
+              <option>Connect Asana first</option>
+            </select>
+          </label>
+          <label for="project">
+            Asana project
+            <select id="project" disabled>
+              <option>Choose a workspace first</option>
+            </select>
+          </label>
+          <label class="checkbox full" for="recursive">
+            <input id="recursive" type="checkbox" checked />
+            <span>Include files in subfolders.</span>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="scan-files" type="button">Scan and preview files</button>
+        </div>
+      </section>
+
+      <section id="preview-card" class="card hidden" aria-labelledby="preview-heading">
+        <h2 id="preview-heading">4. Preview</h2>
+        <p id="preview-summary"></p>
+        <div class="preview-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Task name</th>
+                <th>Drive folder</th>
+                <th>Drive file</th>
+              </tr>
+            </thead>
+            <tbody id="preview-rows"></tbody>
+          </table>
+        </div>
+        <div class="actions">
+          <button id="create-tasks" type="button">Create Asana tasks</button>
+        </div>
+        <p class="hint">
+          Existing records for the same Drive file, Asana account, workspace,
+          and project are checked in Asana before being skipped. Unavailable
+          tasks are recreated; use the reset button above only if you
+          deliberately want to create duplicates.
+        </p>
+      </section>
+
+      <section class="card" aria-labelledby="activity-heading">
+        <h2 id="activity-heading">Activity</h2>
+        <pre id="activity-log" class="log" aria-live="polite">Ready.</pre>
+      </section>
+    </main>
+
+    <script>
+      "use strict";
+
+      const ASANA_API = "https://app.asana.com/api/1.0";
+      const DRIVE_API = "https://www.googleapis.com/drive/v3";
+      const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.metadata.readonly";
+      const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+      const STORAGE = {
+        googleClientId: "drive-to-asana.google-client-id",
+        asanaToken: "drive-to-asana.asana-token",
+        syncState: "drive-to-asana.sync-state",
+      };
+
+      const element = (id) => document.getElementById(id);
+      const googleClientIdInput = element("google-client-id");
+      const asanaTokenInput = element("asana-token");
+      const rememberAsanaTokenInput = element("remember-asana-token");
+      const workspaceSelect = element("workspace");
+      const projectSelect = element("project");
+      const folderInput = element("drive-folder-url");
+      const logElement = element("activity-log");
+
+      let googleAccessToken = "";
+      let asanaUser = null;
+      let scannedFiles = [];
+
+      class ApiError extends Error {
+        constructor(service, status, message) {
+          super(`${service} API error ${status}: ${message}`);
+          this.service = service;
+          this.status = status;
+        }
+      }
+
+      function setStatus(id, message, kind = "") {
+        const status = element(id);
+        status.textContent = message;
+        status.className = `status ${kind}`.trim();
+      }
+
+      function log(message) {
+        const timestamp = new Date().toLocaleTimeString();
+        logElement.textContent += `\n[${timestamp}] ${message}`;
+        logElement.scrollTop = logElement.scrollHeight;
+      }
+
+      function setBusy(button, busy, busyText) {
+        if (!button.dataset.label) {
+          button.dataset.label = button.textContent;
+        }
+        button.disabled = busy;
+        button.textContent = busy ? busyText : button.dataset.label;
+      }
+
+      function savedValue(key) {
+        try {
+          return window.localStorage.getItem(key) || "";
+        } catch {
+          return "";
+        }
+      }
+
+      function saveValue(key, value) {
+        try {
+          if (value) {
+            window.localStorage.setItem(key, value);
+          } else {
+            window.localStorage.removeItem(key);
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      function loadBrowserSettings() {
+        googleClientIdInput.value = savedValue(STORAGE.googleClientId);
+        const savedToken = savedValue(STORAGE.asanaToken);
+        if (savedToken) {
+          asanaTokenInput.value = savedToken;
+          rememberAsanaTokenInput.checked = true;
+        }
+      }
+
+      function saveBrowserSettings() {
+        const clientId = googleClientIdInput.value.trim();
+        const asanaToken = asanaTokenInput.value.trim();
+        const clientIdSaved = saveValue(STORAGE.googleClientId, clientId);
+        const tokenSaved = rememberAsanaTokenInput.checked
+          ? saveValue(STORAGE.asanaToken, asanaToken)
+          : saveValue(STORAGE.asanaToken, "");
+        if (!clientIdSaved || !tokenSaved) {
+          throw new Error("The browser blocked local storage for this page.");
+        }
+        log("Browser settings saved.");
+      }
+
+      function clearBrowserData() {
+        if (!window.confirm("Clear saved settings and this browser's duplicate-sync history?")) {
+          return;
+        }
+        for (const key of Object.values(STORAGE)) {
+          saveValue(key, "");
+        }
+        googleClientIdInput.value = "";
+        asanaTokenInput.value = "";
+        rememberAsanaTokenInput.checked = false;
+        googleAccessToken = "";
+        asanaUser = null;
+        scannedFiles = [];
+        setStatus("google-status", "Google Drive not connected");
+        setStatus("asana-status", "Asana not connected");
+        resetDestinationSelectors();
+        element("preview-card").classList.add("hidden");
+        log("Saved settings and sync history cleared.");
+      }
+
+      function queryPath(path, parameters = {}) {
+        const query = new URLSearchParams();
+        for (const [key, value] of Object.entries(parameters)) {
+          if (value !== undefined && value !== null && value !== "") {
+            query.set(key, value);
+          }
+        }
+        const serialized = query.toString();
+        return serialized ? `${path}?${serialized}` : path;
+      }
+
+      function wait(milliseconds) {
+        return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+      }
+
+      async function readResponse(response, service) {
+        const text = await response.text();
+        let payload = {};
+        try {
+          payload = text ? JSON.parse(text) : {};
+        } catch {
+          payload = { message: text };
+        }
+        if (!response.ok) {
+          const messages = Array.isArray(payload.errors)
+            ? payload.errors.map((error) => error.message).filter(Boolean).join("; ")
+            : "";
+          const message =
+            messages || payload.error?.message || payload.message || response.statusText;
+          throw new ApiError(service, response.status, message);
+        }
+        return payload;
+      }
+
+      function getAsanaToken() {
+        const token = asanaTokenInput.value.trim();
+        if (!token) {
+          throw new Error("Paste an Asana personal access token first.");
+        }
+        return token;
+      }
+
+      async function asanaApi(path, { method = "GET", json, form } = {}) {
+        const headers = { Authorization: `Bearer ${getAsanaToken()}` };
+        let body;
+        if (json !== undefined) {
+          headers["Content-Type"] = "application/json";
+          body = JSON.stringify(json);
+        } else if (form !== undefined) {
+          body = form;
+        }
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          const response = await fetch(`${ASANA_API}${path}`, { method, headers, body });
+          if (response.status !== 429 || attempt === 3) {
+            return readResponse(response, "Asana");
+          }
+          const retryAfterSeconds = Number.parseFloat(response.headers.get("Retry-After"));
+          const delay = Number.isFinite(retryAfterSeconds)
+            ? Math.min(Math.max(retryAfterSeconds * 1000, 1000), 60000)
+            : (attempt + 1) * 1000;
+          log(`Asana rate limit reached; retrying in ${Math.ceil(delay / 1000)} seconds.`);
+          await wait(delay);
+        }
+        throw new Error("Asana request retry limit reached.");
+      }
+
+      async function googleApi(path, parameters = {}) {
+        if (!googleAccessToken) {
+          throw new Error("Connect Google Drive first.");
+        }
+        const response = await fetch(`${DRIVE_API}${queryPath(path, parameters)}`, {
+          headers: { Authorization: `Bearer ${googleAccessToken}` },
+        });
+        try {
+          return await readResponse(response, "Google Drive");
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 401) {
+            googleAccessToken = "";
+            setStatus("google-status", "Google access expired — connect again", "bad");
+          }
+          throw error;
+        }
+      }
+
+      function extractFolderId(value) {
+        const candidate = value.trim();
+        if (!candidate) {
+          throw new Error("Paste a Google Drive folder link first.");
+        }
+        if (!candidate.includes("://")) {
+          if (/^[A-Za-z0-9_-]{10,}$/.test(candidate)) return candidate;
+          throw new Error("That does not look like a Google Drive folder ID or link.");
+        }
+        const url = new URL(candidate);
+        if (!url.hostname.endsWith("drive.google.com")) {
+          throw new Error("Use a link from drive.google.com.");
+        }
+        const match = url.pathname.match(/\/folders\/([^/?]+)/);
+        const folderId = match?.[1] || url.searchParams.get("id");
+        if (!folderId) {
+          throw new Error("Could not find a folder ID in that Google Drive link.");
+        }
+        return folderId;
+      }
+
+      async function connectGoogle() {
+        const clientId = googleClientIdInput.value.trim();
+        if (!clientId) {
+          throw new Error("Enter the Google OAuth web client ID first.");
+        }
+        if (!window.google?.accounts?.oauth2) {
+          throw new Error("Google's sign-in library is still loading. Try again in a moment.");
+        }
+        await new Promise((resolve, reject) => {
+          const tokenClient = window.google.accounts.oauth2.initTokenClient({
+            client_id: clientId,
+            scope: DRIVE_SCOPE,
+            callback: (response) => {
+              if (response.error) {
+                reject(new Error(`Google authorization failed: ${response.error}`));
+                return;
+              }
+              googleAccessToken = response.access_token;
+              setStatus("google-status", "Google Drive connected", "good");
+              log("Google Drive connected. Access is limited to file metadata.");
+              resolve();
+            },
+          });
+          tokenClient.requestAccessToken({ prompt: "consent" });
+        });
+      }
+
+      async function asanaList(path, parameters = {}) {
+        const items = [];
+        let offset = "";
+        do {
+          const response = await asanaApi(queryPath(path, { ...parameters, offset }));
+          items.push(...(response.data || []));
+          offset = response.next_page?.offset || "";
+        } while (offset);
+        return items;
+      }
+
+      function replaceOptions(select, items, placeholder) {
+        select.replaceChildren();
+        const initial = document.createElement("option");
+        initial.value = "";
+        initial.textContent = placeholder;
+        select.append(initial);
+        for (const item of items) {
+          const option = document.createElement("option");
+          option.value = item.gid;
+          option.textContent = item.name;
+          select.append(option);
+        }
+      }
+
+      function resetDestinationSelectors() {
+        replaceOptions(workspaceSelect, [], "Connect Asana first");
+        workspaceSelect.disabled = true;
+        replaceOptions(projectSelect, [], "Choose a workspace first");
+        projectSelect.disabled = true;
+      }
+
+      async function loadAsana() {
+        const [userResponse, workspaces] = await Promise.all([
+          asanaApi("/users/me"),
+          asanaList("/workspaces", { limit: 100 }),
+        ]);
+        asanaUser = userResponse.data;
+        if (!workspaces.length) {
+          throw new Error("This Asana account has no available workspaces.");
+        }
+        replaceOptions(workspaceSelect, workspaces, "Choose a workspace");
+        workspaceSelect.disabled = false;
+        replaceOptions(projectSelect, [], "Choose a workspace first");
+        projectSelect.disabled = true;
+        setStatus("asana-status", `Asana connected as ${asanaUser.name}`, "good");
+        log(`Loaded ${workspaces.length} Asana workspace${workspaces.length === 1 ? "" : "s"}.`);
+      }
+
+      async function loadProjects() {
+        const workspaceGid = workspaceSelect.value;
+        if (!workspaceGid) {
+          replaceOptions(projectSelect, [], "Choose a workspace first");
+          projectSelect.disabled = true;
+          return;
+        }
+        projectSelect.disabled = true;
+        replaceOptions(projectSelect, [], "Loading projects…");
+        const projects = await asanaList(`/workspaces/${encodeURIComponent(workspaceGid)}/projects`, {
+          archived: false,
+          limit: 100,
+        });
+        replaceOptions(projectSelect, projects, "My Tasks only (no project)");
+        projectSelect.disabled = false;
+        log(`Loaded ${projects.length} project${projects.length === 1 ? "" : "s"}.`);
+      }
+
+      async function scanDriveFolder() {
+        const rootId = extractFolderId(folderInput.value);
+        const root = await googleApi(`/files/${encodeURIComponent(rootId)}`, {
+          fields: "id,name,mimeType",
+          supportsAllDrives: true,
+        });
+        if (root.mimeType !== FOLDER_MIME_TYPE) {
+          throw new Error("That Drive link does not point to a folder.");
+        }
+        const includeSubfolders = element("recursive").checked;
+        const queue = [{ id: root.id, path: root.name }];
+        const files = [];
+
+        while (queue.length) {
+          const folder = queue.shift();
+          let pageToken = "";
+          do {
+            const response = await googleApi("/files", {
+              q: `'${folder.id}' in parents and trashed = false`,
+              fields:
+                "nextPageToken,files(id,name,mimeType,webViewLink,shortcutDetails)",
+              orderBy: "folder,name",
+              pageSize: 1000,
+              pageToken,
+              supportsAllDrives: true,
+              includeItemsFromAllDrives: true,
+            });
+            for (const item of response.files || []) {
+              if (item.mimeType === FOLDER_MIME_TYPE && includeSubfolders) {
+                queue.push({ id: item.id, path: `${folder.path} / ${item.name}` });
+              } else if (item.mimeType !== FOLDER_MIME_TYPE) {
+                files.push({
+                  id: item.id,
+                  name: item.name,
+                  folderPath: folder.path,
+                  webViewLink: item.webViewLink || `https://drive.google.com/open?id=${item.id}`,
+                });
+              }
+            }
+            pageToken = response.nextPageToken || "";
+          } while (pageToken);
+        }
+        return files.sort(
+          (left, right) =>
+            left.folderPath.localeCompare(right.folderPath) || left.name.localeCompare(right.name),
+        );
+      }
+
+      function renderPreview(files) {
+        const rows = element("preview-rows");
+        rows.replaceChildren();
+        const displayLimit = 300;
+        for (const file of files.slice(0, displayLimit)) {
+          const row = document.createElement("tr");
+          const name = document.createElement("td");
+          name.textContent = file.name;
+          const path = document.createElement("td");
+          path.textContent = file.folderPath;
+          const linkCell = document.createElement("td");
+          const link = document.createElement("a");
+          link.href = file.webViewLink;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = "Open in Drive";
+          linkCell.append(link);
+          row.append(name, path, linkCell);
+          rows.append(row);
+        }
+        const remaining = files.length - displayLimit;
+        element("preview-summary").textContent = remaining > 0
+          ? `${files.length} files found. The first ${displayLimit} are shown below.`
+          : `${files.length} files found.`;
+        element("preview-card").classList.remove("hidden");
+      }
+
+      function readSyncState() {
+        const raw = savedValue(STORAGE.syncState);
+        if (!raw) return { version: 1, entries: {} };
+        try {
+          const state = JSON.parse(raw);
+          return state && typeof state.entries === "object"
+            ? state
+            : { version: 1, entries: {} };
+        } catch {
+          return { version: 1, entries: {} };
+        }
+      }
+
+      function saveSyncState(state) {
+        if (!saveValue(STORAGE.syncState, JSON.stringify(state))) {
+          throw new Error("The browser could not save its duplicate-sync history.");
+        }
+      }
+
+      function stateKey(file, workspaceGid, projectGid) {
+        return [file.id, asanaUser.gid, workspaceGid, projectGid || "my-tasks"].join("|");
+      }
+
+      function taskNotes(file) {
+        return [
+          "Created from Google Drive.",
+          `Folder path: ${file.folderPath}`,
+          `Drive link: ${file.webViewLink}`,
+          `Drive file ID: ${file.id}`,
+        ].join("\n");
+      }
+
+      async function attachDriveLink(taskGid, file) {
+        const form = new FormData();
+        form.set("parent", taskGid);
+        form.set("resource_subtype", "external");
+        form.set("name", file.name);
+        form.set("url", file.webViewLink);
+        await asanaApi("/attachments", { method: "POST", form });
+      }
+
+      function unavailableTask(error) {
+        return (
+          error instanceof ApiError &&
+          (error.status === 404 || /parent:\s*Unknown object/i.test(error.message))
+        );
+      }
+
+      async function checkTaskAvailable(taskGid) {
+        await asanaApi(
+          queryPath(`/tasks/${encodeURIComponent(taskGid)}`, { opt_fields: "gid" }),
+        );
+      }
+
+      async function createTasks() {
+        if (!asanaUser) {
+          throw new Error("Load the Asana workspaces first.");
+        }
+        const workspaceGid = workspaceSelect.value;
+        const projectGid = projectSelect.value;
+        if (!workspaceGid) {
+          throw new Error("Choose an Asana workspace first.");
+        }
+        if (!scannedFiles.length) {
+          throw new Error("Scan a Drive folder first.");
+        }
+        const destination = projectGid
+          ? `the selected project (${projectSelect.selectedOptions[0].textContent})`
+          : "My Tasks";
+        if (!window.confirm(`Create tasks for ${scannedFiles.length} files in ${destination}?`)) {
+          return;
+        }
+
+        const state = readSyncState();
+        let created = 0;
+        let skipped = 0;
+        let attached = 0;
+        let failed = 0;
+
+        for (const file of scannedFiles) {
+          const key = stateKey(file, workspaceGid, projectGid);
+          let record = state.entries[key];
+          if (record?.taskGid && record.attachmentAdded) {
+            try {
+              await checkTaskAvailable(record.taskGid);
+              skipped += 1;
+              log(`SKIP ${file.name}`);
+              continue;
+            } catch (error) {
+              if (unavailableTask(error)) {
+                delete state.entries[key];
+                saveSyncState(state);
+                record = null;
+                log(`RECREATE ${file.name} (previous Asana task is unavailable)`);
+              } else {
+                failed += 1;
+                log(`ERROR checking ${file.name}: ${error.message}`);
+                continue;
+              }
+            }
+          }
+
+          if (record?.taskGid) {
+            try {
+              await attachDriveLink(record.taskGid, file);
+              record.attachmentAdded = true;
+              saveSyncState(state);
+              attached += 1;
+              log(`ATTACH ${file.name}`);
+              continue;
+            } catch (error) {
+              if (unavailableTask(error)) {
+                delete state.entries[key];
+                saveSyncState(state);
+                record = null;
+                log(`RECREATE ${file.name} (previous Asana task is unavailable)`);
+              } else {
+                failed += 1;
+                log(`ERROR attaching ${file.name}: ${error.message}`);
+                continue;
+              }
+            }
+          }
+
+          try {
+            const data = {
+              name: file.name,
+              notes: taskNotes(file),
+              workspace: workspaceGid,
+              assignee: "me",
+            };
+            if (projectGid) data.projects = [projectGid];
+            const response = await asanaApi("/tasks", {
+              method: "POST",
+              json: { data },
+            });
+            const taskGid = response.data.gid;
+            state.entries[key] = {
+              taskGid,
+              attachmentAdded: false,
+              createdAt: new Date().toISOString(),
+            };
+            saveSyncState(state);
+            await attachDriveLink(taskGid, file);
+            state.entries[key].attachmentAdded = true;
+            saveSyncState(state);
+            created += 1;
+            attached += 1;
+            log(`CREATE ${file.name}`);
+          } catch (error) {
+            failed += 1;
+            log(`ERROR creating ${file.name}: ${error.message}`);
+          }
+        }
+
+        const summary = `Finished: ${created} created, ${skipped} skipped, ${attached} Drive links attached, ${failed} failed.`;
+        log(summary);
+        window.alert(summary);
+      }
+
+      async function run(button, busyText, action) {
+        try {
+          setBusy(button, true, busyText);
+          await action();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          log(`ERROR: ${message}`);
+          window.alert(message);
+        } finally {
+          setBusy(button, false, busyText);
+        }
+      }
+
+      element("save-settings").addEventListener("click", () => {
+        run(element("save-settings"), "Saving…", async () => saveBrowserSettings());
+      });
+      element("clear-browser-data").addEventListener("click", clearBrowserData);
+      element("connect-google").addEventListener("click", () => {
+        run(element("connect-google"), "Connecting…", connectGoogle);
+      });
+      element("load-asana").addEventListener("click", () => {
+        run(element("load-asana"), "Loading…", loadAsana);
+      });
+      asanaTokenInput.addEventListener("input", () => {
+        if (!asanaUser) return;
+        asanaUser = null;
+        resetDestinationSelectors();
+        setStatus("asana-status", "Asana token changed — load workspaces again");
+      });
+      googleClientIdInput.addEventListener("input", () => {
+        if (!googleAccessToken) return;
+        googleAccessToken = "";
+        setStatus("google-status", "Google client ID changed — connect again");
+      });
+      workspaceSelect.addEventListener("change", async () => {
+        try {
+          await loadProjects();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          log(`ERROR: ${message}`);
+          window.alert(message);
+        }
+      });
+      element("scan-files").addEventListener("click", () => {
+        run(element("scan-files"), "Scanning…", async () => {
+          scannedFiles = await scanDriveFolder();
+          renderPreview(scannedFiles);
+          log(`Found ${scannedFiles.length} Drive file${scannedFiles.length === 1 ? "" : "s"}.`);
+        });
+      });
+      element("create-tasks").addEventListener("click", () => {
+        run(element("create-tasks"), "Creating…", createTasks);
+      });
+
+      loadBrowserSettings();
+      resetDestinationSelectors();
+    </script>
+  </body>
+</html>
