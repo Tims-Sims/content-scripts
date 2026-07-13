@@ -383,6 +383,14 @@
             <input id="recursive" type="checkbox" checked />
             <span>Include files in subfolders.</span>
           </label>
+          <label class="full" for="task-attachments">
+            Files to attach to every created task (optional)
+            <input id="task-attachments" type="file" multiple />
+          </label>
+          <p id="task-attachment-summary" class="hint full">
+            No local files selected. Selected files stay in this tab until they
+            are uploaded directly to Asana.
+          </p>
         </div>
         <div class="actions">
           <button id="scan-files" type="button">Scan and preview files</button>
@@ -411,7 +419,8 @@
           Existing records for the same Drive file, Asana account, workspace,
           and project are checked in Asana before being skipped. Unavailable
           tasks are recreated; use the reset button above only if you
-          deliberately want to create duplicates.
+          deliberately want to create duplicates. Any selected local files are
+          also attached to previously created tasks in this sync destination.
         </p>
       </section>
 
@@ -428,6 +437,7 @@
       const DRIVE_API = "https://www.googleapis.com/drive/v3";
       const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.metadata.readonly";
       const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+      const MAX_ASANA_ATTACHMENT_BYTES = 100 * 1024 * 1024;
       const STORAGE = {
         googleClientId: "drive-to-asana.google-client-id",
         asanaToken: "drive-to-asana.asana-token",
@@ -441,6 +451,8 @@
       const workspaceSelect = element("workspace");
       const projectSelect = element("project");
       const folderInput = element("drive-folder-url");
+      const taskAttachmentsInput = element("task-attachments");
+      const taskAttachmentSummary = element("task-attachment-summary");
       const logElement = element("activity-log");
 
       let googleAccessToken = "";
@@ -465,6 +477,45 @@
         const timestamp = new Date().toLocaleTimeString();
         logElement.textContent += `\n[${timestamp}] ${message}`;
         logElement.scrollTop = logElement.scrollHeight;
+      }
+
+      function formatBytes(bytes) {
+        if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      }
+
+      function selectedTaskAttachments() {
+        return Array.from(taskAttachmentsInput.files || []);
+      }
+
+      function attachmentSignature(file) {
+        return [file.name, file.size, file.lastModified, file.type].join("\u0000");
+      }
+
+      function renderAttachmentSelection() {
+        const files = selectedTaskAttachments();
+        if (!files.length) {
+          taskAttachmentSummary.textContent =
+            "No local files selected. Selected files stay in this tab until they are uploaded directly to Asana.";
+          return;
+        }
+        const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+        const perTask = `${files.length} file${files.length === 1 ? "" : "s"} (${formatBytes(totalSize)})`;
+        const overall = scannedFiles.length
+          ? ` This uploads ${formatBytes(totalSize * scannedFiles.length)} across ${scannedFiles.length} tasks.`
+          : "";
+        taskAttachmentSummary.textContent = `${perTask} will be attached to every task.${overall}`;
+      }
+
+      function validateSelectedAttachments() {
+        const files = selectedTaskAttachments();
+        const tooLarge = files.find((file) => file.size > MAX_ASANA_ATTACHMENT_BYTES);
+        if (tooLarge) {
+          throw new Error(
+            `'${tooLarge.name}' is ${formatBytes(tooLarge.size)}. Asana allows attachments up to 100 MB each.`,
+          );
+        }
+        return files;
       }
 
       function setBusy(button, busy, busyText) {
@@ -810,6 +861,7 @@
           ? `${files.length} files found. The first ${displayLimit} are shown below.`
           : `${files.length} files found.`;
         element("preview-card").classList.remove("hidden");
+        renderAttachmentSelection();
       }
 
       function readSyncState() {
@@ -853,6 +905,30 @@
         await asanaApi("/attachments", { method: "POST", form });
       }
 
+      async function attachUploadedFile(taskGid, file) {
+        const form = new FormData();
+        form.set("parent", taskGid);
+        form.set("file", file, file.name);
+        await asanaApi("/attachments", { method: "POST", form });
+      }
+
+      async function attachSelectedFiles(taskGid, record, state, taskName, uploads) {
+        const alreadyAttached = new Set(record.uploadedFileSignatures || []);
+        let attached = 0;
+        for (const file of uploads) {
+          const signature = attachmentSignature(file);
+          if (alreadyAttached.has(signature)) continue;
+          await attachUploadedFile(taskGid, file);
+          record.uploadedFileSignatures = record.uploadedFileSignatures || [];
+          record.uploadedFileSignatures.push(signature);
+          alreadyAttached.add(signature);
+          saveSyncState(state);
+          attached += 1;
+          log(`UPLOAD ${file.name} → ${taskName}`);
+        }
+        return attached;
+      }
+
       function unavailableTask(error) {
         return (
           error instanceof ApiError &&
@@ -878,28 +954,34 @@
         if (!scannedFiles.length) {
           throw new Error("Scan a Drive folder first.");
         }
+        const uploads = validateSelectedAttachments();
         const destination = projectGid
           ? `the selected project (${projectSelect.selectedOptions[0].textContent})`
           : "My Tasks";
-        if (!window.confirm(`Create tasks for ${scannedFiles.length} files in ${destination}?`)) {
+        const uploadDescription = uploads.length
+          ? ` and upload ${uploads.length} selected file${uploads.length === 1 ? "" : "s"} to each task`
+          : "";
+        if (
+          !window.confirm(
+            `Create tasks for ${scannedFiles.length} files in ${destination}${uploadDescription}?`,
+          )
+        ) {
           return;
         }
 
         const state = readSyncState();
         let created = 0;
         let skipped = 0;
-        let attached = 0;
+        let driveLinksAttached = 0;
+        let uploadedAttachments = 0;
         let failed = 0;
 
         for (const file of scannedFiles) {
           const key = stateKey(file, workspaceGid, projectGid);
           let record = state.entries[key];
-          if (record?.taskGid && record.attachmentAdded) {
+          if (record?.taskGid) {
             try {
               await checkTaskAvailable(record.taskGid);
-              skipped += 1;
-              log(`SKIP ${file.name}`);
-              continue;
             } catch (error) {
               if (unavailableTask(error)) {
                 delete state.entries[key];
@@ -914,14 +996,13 @@
             }
           }
 
-          if (record?.taskGid) {
+          if (record?.taskGid && !record.attachmentAdded) {
             try {
               await attachDriveLink(record.taskGid, file);
               record.attachmentAdded = true;
               saveSyncState(state);
-              attached += 1;
+              driveLinksAttached += 1;
               log(`ATTACH ${file.name}`);
-              continue;
             } catch (error) {
               if (unavailableTask(error)) {
                 delete state.entries[key];
@@ -936,38 +1017,66 @@
             }
           }
 
+          if (!record?.taskGid) {
+            try {
+              const data = {
+                name: file.name,
+                notes: taskNotes(file),
+                workspace: workspaceGid,
+              };
+              if (projectGid) data.projects = [projectGid];
+              const response = await asanaApi("/tasks", {
+                method: "POST",
+                json: { data },
+              });
+              record = {
+                taskGid: response.data.gid,
+                attachmentAdded: false,
+                uploadedFileSignatures: [],
+                createdAt: new Date().toISOString(),
+              };
+              state.entries[key] = record;
+              saveSyncState(state);
+              created += 1;
+              log(`CREATE ${file.name}`);
+            } catch (error) {
+              failed += 1;
+              log(`ERROR creating ${file.name}: ${error.message}`);
+              continue;
+            }
+          } else {
+            skipped += 1;
+            log(`SKIP ${file.name}`);
+          }
+
+          if (!record.attachmentAdded) {
+            try {
+              await attachDriveLink(record.taskGid, file);
+              record.attachmentAdded = true;
+              saveSyncState(state);
+              driveLinksAttached += 1;
+              log(`ATTACH ${file.name}`);
+            } catch (error) {
+              failed += 1;
+              log(`ERROR attaching Drive link to ${file.name}: ${error.message}`);
+            }
+          }
+
           try {
-            const data = {
-              name: file.name,
-              notes: taskNotes(file),
-              workspace: workspaceGid,
-              assignee: "me",
-            };
-            if (projectGid) data.projects = [projectGid];
-            const response = await asanaApi("/tasks", {
-              method: "POST",
-              json: { data },
-            });
-            const taskGid = response.data.gid;
-            state.entries[key] = {
-              taskGid,
-              attachmentAdded: false,
-              createdAt: new Date().toISOString(),
-            };
-            saveSyncState(state);
-            await attachDriveLink(taskGid, file);
-            state.entries[key].attachmentAdded = true;
-            saveSyncState(state);
-            created += 1;
-            attached += 1;
-            log(`CREATE ${file.name}`);
+            uploadedAttachments += await attachSelectedFiles(
+              record.taskGid,
+              record,
+              state,
+              file.name,
+              uploads,
+            );
           } catch (error) {
             failed += 1;
-            log(`ERROR creating ${file.name}: ${error.message}`);
+            log(`ERROR uploading to ${file.name}: ${error.message}`);
           }
         }
 
-        const summary = `Finished: ${created} created, ${skipped} skipped, ${attached} Drive links attached, ${failed} failed.`;
+        const summary = `Finished: ${created} created, ${skipped} skipped, ${driveLinksAttached} Drive links attached, ${uploadedAttachments} file attachments uploaded, ${failed} failed.`;
         log(summary);
         window.alert(summary);
       }
@@ -1006,6 +1115,7 @@
         googleAccessToken = "";
         setStatus("google-status", "Google client ID changed — connect again");
       });
+      taskAttachmentsInput.addEventListener("change", renderAttachmentSelection);
       workspaceSelect.addEventListener("change", async () => {
         try {
           await loadProjects();
@@ -1028,6 +1138,7 @@
 
       loadBrowserSettings();
       resetDestinationSelectors();
+      renderAttachmentSelection();
     </script>
   </body>
 </html>

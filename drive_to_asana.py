@@ -505,7 +505,7 @@ def sync_files(
     state: SyncState,
     workspace_gid: str | None,
     project_gid: str | None,
-    assignee: str | None = "me",
+    assignee: str | None = None,
     allow_duplicates: bool = False,
     dry_run: bool = False,
     report: Callable[[str], None] = print,
@@ -963,7 +963,7 @@ def _command_wizard() -> int:
         state=state,
         workspace_gid=workspace_gid,
         project_gid=project_gid,
-        assignee="me",
+        assignee=None,
     )
     print(
         f"\nDone: {result.created} created, {result.attachments_added} Drive links "
@@ -1027,10 +1027,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--project-gid", help="Optional Asana project GID to receive the tasks."
     )
     sync.add_argument(
-        "--assignee", default="me", help="Asana user GID (default: the token owner)."
+        "--assignee", help="Optional Asana user GID to assign the created tasks."
     )
     sync.add_argument(
-        "--unassigned", action="store_true", help="Create tasks without an assignee."
+        "--unassigned",
+        action="store_true",
+        help="Create tasks without an assignee (the default; retained for compatibility).",
     )
     sync.add_argument(
         "--top-level-only", action="store_true", help="Do not scan nested folders."

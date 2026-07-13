@@ -335,6 +335,7 @@ class SyncTests(unittest.TestCase):
 
         self.assertEqual(result.created, 2)
         self.assertEqual([call["name"] for call in asana.calls], ["One.pdf", "Two.pdf"])
+        self.assertTrue(all(call["assignee"] is None for call in asana.calls))
         self.assertIn("Drive link: https://drive/one", asana.calls[0]["notes"])
         self.assertEqual(
             asana.attachments,

@@ -93,7 +93,10 @@ as described in [GitHub's Pages documentation](https://docs.github.com/en/pages/
 3. Select **Connect Google Drive**, then complete Google's consent pop-up.
 4. Select **Load Asana workspaces**, then choose a workspace and optional
    project.
-5. Paste a Google Drive folder link, scan the files, review the preview, and
+5. Optionally choose local files to attach to every task. They are held only in
+   the current tab and uploaded directly to Asana when you create the tasks.
+   Asana limits each uploaded attachment to 100 MB.
+6. Paste a Google Drive folder link, scan the files, review the preview, and
    create the tasks.
 
 The Google access token is kept only in the open tab and must be reauthorized
@@ -112,6 +115,11 @@ creates a new sync history and can therefore create duplicate tasks.
 - It saves a task record before adding the external Drive-link attachment. If
   the attachment call fails, the next run retries that attachment instead of
   creating a second task.
+- Selected local files are uploaded directly to Asana and attached to every
+  task in the chosen sync destination, including existing synced tasks. The
+  browser records each successful upload by file name, size, type, and modified
+  time so a repeat run does not upload it again. Clearing browser data removes
+  that duplicate protection for uploads as well.
 - Before skipping a prior record, it checks that the corresponding Asana task
   is still accessible. A deleted task or a task unavailable to a replacement
   PAT is recreated and the browser record is updated.
@@ -383,8 +391,9 @@ Create tasks non-interactively by removing `--dry-run`.
 Useful options:
 
 - `--top-level-only` ignores nested folders.
-- `--unassigned` creates tasks without assigning them to the token owner.
-- `--assignee USER_GID` assigns tasks to another Asana user.
+- Tasks are unassigned by default.
+- `--assignee USER_GID` assigns tasks to a specific Asana user.
+- `--unassigned` is retained for compatibility and has no additional effect.
 - `--allow-duplicates` bypasses the local duplicate check.
 
 ### Manual Python installation
